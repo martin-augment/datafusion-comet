@@ -45,6 +45,10 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     s"${outString.toString()}\n$planStats"
   }
 
+  def getFallbackReasons(plan: SparkPlan): Seq[String] = {
+    extensionInfo(plan).toSeq.sorted
+  }
+
   private[comet] def extensionInfo(node: TreeNode[_]): Set[String] = {
     var info = mutable.Seq[String]()
     val sorted = sortup(node)

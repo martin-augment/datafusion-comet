@@ -1965,7 +1965,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val expected = test._2
             val df = sql(qry)
             df.collect() // force an execution
-            checkSparkAnswerAndCompareExplainPlan(df, expected)
+            checkSparkAnswerAndFallbackReasons(df, expected)
           })
       }
     }

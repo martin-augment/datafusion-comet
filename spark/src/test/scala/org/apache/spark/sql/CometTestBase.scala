@@ -169,7 +169,7 @@ abstract class CometTestBase
   /** Check for the correct results as well as the expected fallback reason */
   def checkSparkAnswerAndFallbackReason(sql: String, fallbackReason: String): Unit = {
     val (_, cometPlan) = checkSparkAnswer(sql)
-    val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
+    val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
     assert(explain.contains(fallbackReason))
   }
 
@@ -221,7 +221,7 @@ abstract class CometTestBase
           assert(
             false,
             s"Expected only Comet native operators, but found ${op.nodeName}.\n" +
-              s"plan: ${new ExtendedExplainInfo().generateVerboseExtendedInfo(plan)}")
+              s"plan: ${new ExtendedExplainInfo().generateExtendedInfo(plan)}")
         }
     }
   }

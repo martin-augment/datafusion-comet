@@ -37,8 +37,8 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   def generateExtendedInfo(plan: SparkPlan): String = {
     CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.get() match {
       case CometConf.COMET_EXTENDED_EXPLAIN_VERBOSE =>
-        // Generates the extended info in a verbose manner, printing each node along with the extended
-        // information in a tree display.
+        // Generates the extended info in a verbose manner, printing each node along with the
+        // extended information in a tree display.
         val planStats = new CometCoverageStats()
         val outString = new StringBuilder()
         generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)

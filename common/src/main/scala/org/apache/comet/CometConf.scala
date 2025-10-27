@@ -463,7 +463,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXTENDED_EXPLAIN_FALLBACK = "fallback"
 
   val COMET_EXTENDED_EXPLAIN_FORMAT: ConfigEntry[String] =
-    conf("spark.comet.explain.verbose.enabled")
+    conf("spark.comet.explain.format")
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "Choose extended explain output. The default format of 'verbose' will provide the full " +

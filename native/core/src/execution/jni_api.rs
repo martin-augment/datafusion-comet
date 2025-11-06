@@ -76,9 +76,10 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::execution::memory_pools::logging_pool::LoggingPool;
 use crate::execution::spark_config::{
-    SparkConfig, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_TRACING_ENABLED,
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -184,6 +185,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
         let max_temp_directory_size =
             spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
+        let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
 
         with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
@@ -219,6 +221,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             )?;
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
+
+            let memory_pool = if logging_memory_pool {
+                Arc::new(LoggingPool::new(task_attempt_id as u64, memory_pool))
+            } else {
+                memory_pool
+            };
 
             // Get local directories for storing spill files
             let num_local_dirs = env.get_array_length(&local_dirs)?;

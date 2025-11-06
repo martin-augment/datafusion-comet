@@ -74,14 +74,14 @@ jobs:
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
             scan_impl: "native_comet"
 
-          - name: "Spark 3.5.4, JDK 11, Scala 2.12"
-            java_version: "11"
-            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.4 -Pscala-2.12"
-            scan_impl: "native_comet"
-
           - name: "Spark 3.5.5, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
+            scan_impl: "native_comet"
+
+          - name: "Spark 3.5.6, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.6 -Pscala-2.13"
             scan_impl: "native_comet"
 
           - name: "Spark 3.5, JDK 17, Scala 2.12 native_datafusion"
@@ -134,6 +134,7 @@ jobs:
               org.apache.comet.CometCastSuite
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometNativeSuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.comet.CometStringExpressionSuite
@@ -141,6 +142,7 @@ jobs:
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.comet.CometTemporalExpressionSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
               org.apache.spark.sql.CometTPCHQuerySuite

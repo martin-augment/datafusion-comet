@@ -17,12 +17,11 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use crate::execution::operators::CopyMode;
 use crate::{
     errors::ExpressionError,
     execution::{
         expressions::subquery::Subquery,
-        operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
+        operators::{ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -287,8 +286,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/533
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr_with_options(
                     expr.left.as_ref().unwrap(),
@@ -677,19 +674,6 @@ impl PhysicalPlanner {
                 let op = DataFusionOperator::BitwiseShiftLeft;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
-            // https://github.com/apache/datafusion-comet/issues/666
-            // ExprStruct::Abs(expr) => {
-            //     let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-            //     let return_type = child.data_type(&input_schema)?;
-            //     let args = vec![child];
-            //     let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            //     let comet_abs = Arc::new(ScalarUDF::new_from_impl(Abs::new(
-            //         eval_mode,
-            //         return_type.to_string(),
-            //     )?));
-            //     let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
-            //     Ok(Arc::new(expr))
-            // }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
                     .when
@@ -987,11 +971,12 @@ impl PhysicalPlanner {
                 } else {
                     "decimal_div"
                 };
-                let fun_expr = create_comet_physical_fun(
+                let fun_expr = create_comet_physical_fun_with_eval_mode(
                     func_name,
                     data_type.clone(),
                     &self.session_ctx.state(),
                     None,
+                    eval_mode,
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     func_name,
@@ -1092,17 +1077,10 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = if filter.wrap_child_in_copy_exec {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                    )?)
-                } else {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                };
+                let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(
+                    predicate,
+                    Arc::clone(&child.native_plan),
+                )?);
 
                 Ok((
                     scans,
@@ -1230,15 +1208,13 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
-                // SortExec caches batches so we need to make a copy of incoming batches. Also,
-                // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
-                // it would be more efficient if we could avoid that.
-                // https://github.com/apache/datafusion-comet/issues/963
-                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
                 let mut sort_exec: Arc<dyn ExecutionPlan> = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
-                        .with_fetch(fetch),
+                    SortExec::new(
+                        LexOrdering::new(exprs?).unwrap(),
+                        Arc::clone(&child.native_plan),
+                    )
+                    .with_fetch(fetch),
                 );
 
                 if let Some(skip) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
@@ -1328,17 +1304,11 @@ impl PhysicalPlanner {
                     &object_store_options,
                 )?;
 
-                // Generate file groups
-                let mut file_groups: Vec<Vec<PartitionedFile>> =
-                    Vec::with_capacity(partition_count);
-                scan.file_partitions.iter().try_for_each(|partition| {
-                    let files = self.get_partitioned_files(partition)?;
-                    file_groups.push(files);
-                    Ok::<(), ExecutionError>(())
-                })?;
-
-                // TODO: I think we can remove partition_count in the future, but leave for testing.
-                assert_eq!(file_groups.len(), partition_count);
+                // Comet serializes all partitions' PartitionedFiles, but we only want to read this
+                // Spark partition's PartitionedFiles
+                let files =
+                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()
                     .iter()
@@ -1402,13 +1372,9 @@ impl PhysicalPlanner {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
-                // We wrap native shuffle in a CopyExec. This existed previously, but for
-                // RangePartitioning at least we want to ensure that dictionaries are unpacked.
-                let wrapped_child = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
-
                 let partitioning = self.create_partitioning(
                     writer.partitioning.as_ref().unwrap(),
-                    wrapped_child.schema(),
+                    child.native_plan.schema(),
                 )?;
 
                 let codec = match writer.codec.try_into() {
@@ -1425,7 +1391,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    wrapped_child,
+                    Arc::clone(&child.native_plan),
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -1515,8 +1481,8 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
-                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
 
                 let join = Arc::new(SortMergeJoinExec::try_new(
                     Arc::clone(&left),
@@ -1578,12 +1544,8 @@ impl PhysicalPlanner {
                     partition_count,
                 )?;
 
-                // HashJoinExec may cache the input batch internally. We need
-                // to copy the input batch to avoid the data corruption from reusing the input
-                // batch. We also need to unpack dictionary arrays, because the join operators
-                // do not support them.
-                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
-                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
@@ -1811,11 +1773,6 @@ impl PhysicalPlanner {
             },
             left_scans,
         ))
-    }
-
-    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays.
-    fn wrap_in_copy_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
     }
 
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
@@ -2479,7 +2436,7 @@ impl PhysicalPlanner {
             fun_name,
             data_type.clone(),
             &self.session_ctx.state(),
-            None,
+            Some(expr.fail_on_error),
         )?;
 
         let args = args
@@ -3121,11 +3078,8 @@ mod tests {
                         assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
                         let batch = batch.unwrap();
                         assert_eq!(batch.num_rows(), row_count / 4);
-                        // string/binary should still be packed with dictionary
-                        assert!(matches!(
-                            batch.column(0).data_type(),
-                            DataType::Dictionary(_, _)
-                        ));
+                        // string/binary should no longer be packed with dictionary
+                        assert!(matches!(batch.column(0).data_type(), DataType::Utf8));
                     }
                     Poll::Ready(None) => {
                         break;
@@ -3212,7 +3166,6 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
-                wrap_child_in_copy_exec: false,
             })),
         }
     }
@@ -3347,6 +3300,7 @@ mod tests {
                         func: "make_array".to_string(),
                         args: vec![array_col, array_col_1],
                         return_type: None,
+                        fail_on_error: false,
                     })),
                 }],
             })),
@@ -3465,6 +3419,7 @@ mod tests {
                         func: "array_repeat".to_string(),
                         args: vec![array_col, array_col_1],
                         return_type: None,
+                        fail_on_error: false,
                     })),
                 }],
             })),

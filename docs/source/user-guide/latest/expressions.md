@@ -66,6 +66,7 @@ incompatible expressions.
 | Ascii           | Yes               |                                                                                                            |
 | BitLength       | Yes               |                                                                                                            |
 | Chr             | Yes               |                                                                                                            |
+| Concat          | Yes               | Only string inputs are supported                                                                           |
 | ConcatWs        | Yes               |                                                                                                            |
 | Contains        | Yes               |                                                                                                            |
 | EndsWith        | Yes               |                                                                                                            |
@@ -118,6 +119,7 @@ incompatible expressions.
 
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
 |----------------|-----------|-------------------|-----------------------------------|
+| Abs            | `abs`     | Yes               |                                   |
 | Acos           | `acos`    | Yes               |                                   |
 | Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
@@ -200,6 +202,23 @@ incompatible expressions.
 | VariancePop   |            | Yes                       |                                                                  |
 | VarianceSamp  |            | Yes                       |                                                                  |
 
+## Window Functions
+
+```{warning}
+Window support is disabled by default due to known correctness issues. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+```
+
+Comet supports using the following aggregate functions within window contexts with PARTITION BY and ORDER BY clauses. 
+
+| Expression | Spark-Compatible? | Compatibility Notes                          |
+| ---------- | ----------------- | -------------------------------------------- |
+| Count      | Yes               |     |
+| Max        | Yes               |     |
+| Min        | Yes               |     |
+| Sum        | Yes               |     |
+
+**Note:** Dedicated window functions such as `rank`, `dense_rank`, `row_number`, `lag`, `lead`, `ntile`, `cume_dist`, `percent_rank`, and `nth_value` are not currently supported and will fall back to Spark.
+
 ## Array Expressions
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
@@ -249,12 +268,21 @@ incompatible expressions.
 | ---------- | ------------------------ | ------------------------------------------------------------------------------------------- |
 | Cast       | Depends on specific cast | See the [Comet Compatibility Guide] for list of supported cast expressions and known issues |
 
+## SortOrder
+
+| Expression  | Spark-Compatible? | Compatibility Notes                                                         |
+|-------------| ----------------- | --------------------------------------------------------------------------- |
+| NullsFirst  | Yes               |                                                                             |
+| NullsLast   | Yes               |                                                                             |
+| Ascending   | Yes               |                                                                             |
+| Descending  | Yes               |                                                                             |
+
 ## Other
 
 | Expression                   | Spark-Compatible? | Compatibility Notes                                                         |
-| ---------------------------- | ----------------- | --------------------------------------------------------------------------- |
+|------------------------------| ----------------- | --------------------------------------------------------------------------- |
 | Alias                        | Yes               |                                                                             |
-| AttributeRefernce            | Yes               |                                                                             |
+| AttributeReference           | Yes               |                                                                             |
 | BloomFilterMightContain      | Yes               |                                                                             |
 | Coalesce                     | Yes               |                                                                             |
 | CheckOverflow                | Yes               |                                                                             |

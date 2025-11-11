@@ -27,15 +27,10 @@ Comet provides the following configuration settings.
 <!--BEGIN:CONFIG_TABLE[scan]-->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
-| `spark.comet.convert.csv.enabled` | When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | false |
-| `spark.comet.convert.json.enabled` | When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | false |
-| `spark.comet.convert.parquet.enabled` | When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | false |
 | `spark.comet.scan.allowIncompatible` | Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/compatibility.html). | false |
 | `spark.comet.scan.enabled` | Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | true |
 | `spark.comet.scan.preFetch.enabled` | Whether to enable pre-fetching feature of CometScan. | false |
 | `spark.comet.scan.preFetch.threadNum` | The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups. | 2 |
-| `spark.comet.sparkToColumnar.enabled` | Whether to enable Spark to Arrow columnar conversion. When this is turned on, Comet will convert operators in `spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before processing. | false |
-| `spark.comet.sparkToColumnar.supportedOperatorList` | A comma-separated list of operators that will be converted to Arrow columnar format when `spark.comet.sparkToColumnar.enabled` is true | Range,InMemoryTableScan,RDDScan |
 | `spark.hadoop.fs.comet.libhdfs.schemes` | Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled. | |
 <!--END:CONFIG_TABLE-->
 
@@ -63,7 +58,7 @@ Comet provides the following configuration settings.
 | `spark.comet.caseConversion.enabled` | Java uses locale-specific rules when converting strings to upper or lower case and Rust does not, so we disable upper and lower by default. | false |
 | `spark.comet.debug.enabled` | Whether to enable debug mode for Comet. When enabled, Comet will do additional checks for debugging purpose. For example, validating array when importing arrays from JVM at native side. Note that these checks may be expensive in performance and should only be enabled for debugging purpose. | false |
 | `spark.comet.dppFallback.enabled` | Whether to fall back to Spark for queries that use DPP. | true |
-| `spark.comet.enabled` | Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. By default, this config is the value of the env var `ENABLE_COMET` if set, or true otherwise. | true |
+| `spark.comet.enabled` | Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. Can be overridden by environment variable `ENABLE_COMET`. | true |
 | `spark.comet.exceptionOnDatetimeRebase` | Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased. | false |
 | `spark.comet.exec.enabled` | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of `spark.comet.exec.<operator_name>.enabled` at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. | true |
 | `spark.comet.exec.replaceSortMergeJoin` | Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | false |
@@ -82,11 +77,11 @@ These settings can be used to determine which parts of the plan are accelerated 
 <!--BEGIN:CONFIG_TABLE[exec_explain]-->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
+| `spark.comet.explain.format` | Choose extended explain output. The default format of 'verbose' will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. The format 'fallback' provides a list of fallback reasons instead. | verbose |
 | `spark.comet.explain.native.enabled` | When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics. | false |
 | `spark.comet.explain.rules` | When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false | false |
-| `spark.comet.explain.verbose.enabled` | When this setting is enabled, Comet's extended explain output will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. When this setting is disabled, a list of fallback reasons will be provided instead. | false |
 | `spark.comet.explainFallback.enabled` | When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging. | false |
-| `spark.comet.logFallbackReasons.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. | false |
+| `spark.comet.logFallbackReasons.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. Can be overridden by environment variable `ENABLE_COMET_LOG_FALLBACK_REASONS`. | false |
 <!--END:CONFIG_TABLE-->
 
 ## Shuffle Configuration Settings
@@ -127,9 +122,15 @@ These settings can be used to determine which parts of the plan are accelerated 
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.columnar.shuffle.memory.factor` | Fraction of Comet memory to be allocated per executor process for columnar shuffle when running in on-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
-| `spark.comet.exec.onHeap.enabled` | Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. | false |
+| `spark.comet.convert.csv.enabled` | When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to Arrow format. This is an experimental feature and has known issues with non-UTC timezones. | false |
+| `spark.comet.convert.json.enabled` | When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to Arrow format. This is an experimental feature and has known issues with non-UTC timezones. | false |
+| `spark.comet.convert.parquet.enabled` | When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format.  This is an experimental feature and has known issues with non-UTC timezones. | false |
+| `spark.comet.exec.onHeap.enabled` | Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. Can be overridden by environment variable `ENABLE_COMET_ONHEAP`. | false |
 | `spark.comet.exec.onHeap.memoryPool` | The type of memory pool to be used for Comet native execution when running Spark in on-heap mode. Available pool types are `greedy`, `fair_spill`, `greedy_task_shared`, `fair_spill_task_shared`, `greedy_global`, `fair_spill_global`, and `unbounded`. | greedy_task_shared |
 | `spark.comet.memoryOverhead` | The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. | 1024 MiB |
+| `spark.comet.sparkToColumnar.enabled` | Whether to enable Spark to Arrow columnar conversion. When this is turned on, Comet will convert operators in `spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before processing. This is an experimental feature and has known issues with non-UTC timezones. | false |
+| `spark.comet.sparkToColumnar.supportedOperatorList` | A comma-separated list of operators that will be converted to Arrow columnar format when `spark.comet.sparkToColumnar.enabled` is true. | Range,InMemoryTableScan,RDDScan |
+| `spark.comet.testing.strict` | Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. Can be overridden by environment variable `ENABLE_COMET_STRICT_TESTING`. | false |
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Operators
@@ -148,6 +149,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.globalLimit.enabled` | Whether to enable globalLimit by default. | true |
 | `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true |
 | `spark.comet.exec.localLimit.enabled` | Whether to enable localLimit by default. | true |
+| `spark.comet.exec.localTableScan.enabled` | Whether to enable localTableScan by default. | false |
 | `spark.comet.exec.project.enabled` | Whether to enable project by default. | true |
 | `spark.comet.exec.sort.enabled` | Whether to enable sort by default. | true |
 | `spark.comet.exec.sortMergeJoin.enabled` | Whether to enable sortMergeJoin by default. | true |
@@ -163,6 +165,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
+| `spark.comet.expression.Abs.enabled` | Enable Comet acceleration for `Abs` | true |
 | `spark.comet.expression.Acos.enabled` | Enable Comet acceleration for `Acos` | true |
 | `spark.comet.expression.Add.enabled` | Enable Comet acceleration for `Add` | true |
 | `spark.comet.expression.Alias.enabled` | Enable Comet acceleration for `Alias` | true |
@@ -200,6 +203,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.CheckOverflow.enabled` | Enable Comet acceleration for `CheckOverflow` | true |
 | `spark.comet.expression.Chr.enabled` | Enable Comet acceleration for `Chr` | true |
 | `spark.comet.expression.Coalesce.enabled` | Enable Comet acceleration for `Coalesce` | true |
+| `spark.comet.expression.Concat.enabled` | Enable Comet acceleration for `Concat` | true |
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
@@ -274,6 +278,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ShiftRight.enabled` | Enable Comet acceleration for `ShiftRight` | true |
 | `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
+| `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
 | `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |
 | `spark.comet.expression.StartsWith.enabled` | Enable Comet acceleration for `StartsWith` | true |

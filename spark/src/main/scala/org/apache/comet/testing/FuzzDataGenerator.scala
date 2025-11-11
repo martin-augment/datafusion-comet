@@ -44,6 +44,9 @@ object FuzzDataGenerator {
   val defaultBaseDate: Long =
     new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("3333-05-25 12:34:56").getTime
 
+  val floatNaNLiteral = "FLOAT('NaN')"
+  val doubleNaNLiteral = "DOUBLE('NaN')"
+
   def generateSchema(options: SchemaGenOptions): StructType = {
     val primitiveTypes = options.primitiveTypes
     val dataTypes = ListBuffer[DataType]()
@@ -168,6 +171,7 @@ object FuzzDataGenerator {
             case 4 => Float.MaxValue
             case 5 => 0.0f
             case 6 if options.generateNegativeZero => -0.0f
+            case 7 if options.generateNaN => Float.NaN
             case _ => r.nextFloat()
           }
         })
@@ -181,6 +185,7 @@ object FuzzDataGenerator {
             case 4 => Double.MaxValue
             case 5 => 0.0
             case 6 if options.generateNegativeZero => -0.0
+            case 7 if options.generateNaN => Double.NaN
             case _ => r.nextDouble()
           }
         })
@@ -194,11 +199,13 @@ object FuzzDataGenerator {
             case 1 => r.nextInt().toByte.toString
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
-            case 4 => RandomStringUtils.randomAlphabetic(8)
+            case 4 => RandomStringUtils.randomAlphabetic(options.maxStringLength)
             case 5 =>
               // use a constant value to trigger dictionary encoding
               "dict_encode_me!"
-            case _ => r.nextString(8)
+            case 6 if options.customStrings.nonEmpty =>
+              randomChoice(options.customStrings, r)
+            case _ => r.nextString(options.maxStringLength)
           }
         })
       case DataTypes.BinaryType =>
@@ -221,6 +228,11 @@ object FuzzDataGenerator {
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }
   }
+
+  private def randomChoice[T](list: Seq[T], r: Random): T = {
+    list(r.nextInt(list.length))
+  }
+
 }
 
 object SchemaGenOptions {
@@ -250,4 +262,7 @@ case class SchemaGenOptions(
 case class DataGenOptions(
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
-    baseDate: Long = FuzzDataGenerator.defaultBaseDate)
+    generateNaN: Boolean = true,
+    baseDate: Long = FuzzDataGenerator.defaultBaseDate,
+    customStrings: Seq[String] = Seq.empty,
+    maxStringLength: Int = 8)

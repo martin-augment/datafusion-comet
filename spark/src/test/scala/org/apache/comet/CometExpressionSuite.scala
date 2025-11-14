@@ -1352,7 +1352,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "log2",
           "sin",
           "sqrt",
-          "tan")) {
+          "tan",
+          "cot")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
@@ -1970,7 +1971,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(
           (
             s"select * from $table LIMIT 10",
-            Set("spark.comet.exec.collectLimit.enabled is false")))
+            Set("Native support for operator CollectLimitExec is disabled. " +
+              "Set spark.comet.exec.collectLimit.enabled=true to enable it")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2

@@ -282,12 +282,14 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
 | `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |
 | `spark.comet.expression.StartsWith.enabled` | Enable Comet acceleration for `StartsWith` | true |
+| `spark.comet.expression.StaticInvoke.enabled` | Enable Comet acceleration for `StaticInvoke` | true |
 | `spark.comet.expression.StringInstr.enabled` | Enable Comet acceleration for `StringInstr` | true |
 | `spark.comet.expression.StringLPad.enabled` | Enable Comet acceleration for `StringLPad` | true |
 | `spark.comet.expression.StringRPad.enabled` | Enable Comet acceleration for `StringRPad` | true |
 | `spark.comet.expression.StringRepeat.enabled` | Enable Comet acceleration for `StringRepeat` | true |
 | `spark.comet.expression.StringReplace.enabled` | Enable Comet acceleration for `StringReplace` | true |
 | `spark.comet.expression.StringSpace.enabled` | Enable Comet acceleration for `StringSpace` | true |
+| `spark.comet.expression.StringSplit.enabled` | Enable Comet acceleration for `StringSplit` | true |
 | `spark.comet.expression.StringTranslate.enabled` | Enable Comet acceleration for `StringTranslate` | true |
 | `spark.comet.expression.StringTrim.enabled` | Enable Comet acceleration for `StringTrim` | true |
 | `spark.comet.expression.StringTrimBoth.enabled` | Enable Comet acceleration for `StringTrimBoth` | true |

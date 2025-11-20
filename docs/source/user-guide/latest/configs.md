@@ -179,6 +179,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
+
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|

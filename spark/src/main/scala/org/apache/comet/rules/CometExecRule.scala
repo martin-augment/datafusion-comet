@@ -183,21 +183,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
-    def operator2ProtoIfAllChildrenAreNative(op: SparkPlan): Option[Operator] = {
-      if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-        operator2Proto(op, op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
-      } else {
-        None
-      }
-    }
-
-    /**
-     * Convert operator to proto and then apply a transformation to wrap the proto in a new plan.
-     */
-    def newPlanWithProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
-      operator2ProtoIfAllChildrenAreNative(op).map(fun).getOrElse(op)
-    }
-
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
@@ -296,57 +281,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
         newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
-      // Native shuffle for Comet operators
       case s: ShuffleExchangeExec =>
-        val nativeShuffle: Option[SparkPlan] =
-          if (nativeShuffleSupported(s)) {
-            val newOp = operator2ProtoIfAllChildrenAreNative(s)
-            newOp match {
-              case Some(nativeOp) =>
-                // Switch to use Decimal128 regardless of precision, since Arrow native execution
-                // doesn't support Decimal32 and Decimal64 yet.
-                conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-                val cometOp = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-                Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
-              case None =>
-                None
-            }
-          } else {
-            None
-          }
-
-        val nativeOrColumnarShuffle = if (nativeShuffle.isDefined) {
-          nativeShuffle
-        } else {
-          // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-          // (if configured).
-          // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
-          // convert it to CometColumnarShuffle,
-          if (columnarShuffleSupported(s)) {
-            val newOp = operator2Proto(s)
-            newOp match {
-              case Some(nativeOp) =>
-                s.child match {
-                  case n if n.isInstanceOf[CometNativeExec] || !n.supportsColumnar =>
-                    val cometOp =
-                      CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
-                    Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
-                  case _ =>
-                    None
-                }
-              case None =>
-                None
-            }
-          } else {
-            None
-          }
-        }
-
-        if (nativeOrColumnarShuffle.isDefined) {
-          nativeOrColumnarShuffle.get
-        } else {
-          s
-        }
+        // try native shuffle first, then columnar shuffle, then fall back to Spark
+        // if neither are supported
+        tryNativeShuffle(s).orElse(tryColumnarShuffle(s)).getOrElse(s)
 
       case op =>
         allExecs
@@ -392,6 +330,53 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     plan.transformUp { case op =>
       convertNode(op)
     }
+  }
+
+  private def operator2ProtoIfAllChildrenAreNative(op: SparkPlan): Option[Operator] = {
+    if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+      operator2Proto(op, op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
+    } else {
+      None
+    }
+  }
+
+  /**
+   * Convert operator to proto and then apply a transformation to wrap the proto in a new plan.
+   */
+  private def newPlanWithProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
+    operator2ProtoIfAllChildrenAreNative(op).map(fun).getOrElse(op)
+  }
+
+  private def tryNativeShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
+    Some(s)
+      .filter(_ => nativeShuffleSupported(s))
+      .flatMap(_ => operator2ProtoIfAllChildrenAreNative(s))
+      .map { nativeOp =>
+        // Switch to use Decimal128 regardless of precision, since Arrow native execution
+        // doesn't support Decimal32 and Decimal64 yet.
+        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+        val cometOp = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+        CometSinkPlaceHolder(nativeOp, s, cometOp)
+      }
+  }
+
+  private def tryColumnarShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
+    // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
+    // (if configured).
+    // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
+    // convert it to CometColumnarShuffle,
+    Some(s)
+      .filter(_ => columnarShuffleSupported(s))
+      .flatMap(_ => operator2Proto(s))
+      .flatMap { nativeOp =>
+        s.child match {
+          case n if n.isInstanceOf[CometNativeExec] || !n.supportsColumnar =>
+            val cometOp = CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+            Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
+          case _ =>
+            None
+        }
+      }
   }
 
   private def normalizePlan(plan: SparkPlan): SparkPlan = {
@@ -548,6 +533,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           // If reaching leaf node, reset `firstNativeOp` to true
           // because it will start a new block in next iteration.
           if (op.children.isEmpty) {
+            firstNativeOp = true
+          }
+
+          // CometNativeWriteExec is special: it has two separate plans:
+          // 1. A protobuf plan (nativeOp) describing the write operation
+          // 2. A Spark plan (child) that produces the data to write
+          // The serializedPlanOpt is a def that always returns Some(...) by serializing
+          // nativeOp on-demand, so it doesn't need convertBlock(). However, its child
+          // (e.g., CometNativeScanExec) may need its own serialization. Reset the flag
+          // so children can start their own native execution blocks.
+          if (op.isInstanceOf[CometNativeWriteExec]) {
             firstNativeOp = true
           }
 

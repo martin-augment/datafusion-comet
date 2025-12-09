@@ -17,12 +17,16 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
+pub mod expression_registry;
+pub mod traits;
+
 use crate::execution::operators::IcebergScanExec;
 use crate::{
     errors::ExpressionError,
     execution::{
         expressions::subquery::Subquery,
         operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
+        planner::expression_registry::ExpressionRegistry,
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -62,9 +66,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, create_modulo_expr,
-    create_negate_expr, BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, EvalMode,
-    SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
 };
 use iceberg::expr::Bind;
 
@@ -144,7 +147,7 @@ struct JoinParameters {
 }
 
 #[derive(Default)]
-struct BinaryExprOptions {
+pub struct BinaryExprOptions {
     pub is_integral_div: bool,
 }
 
@@ -156,6 +159,7 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     partition: i32,
     session_ctx: Arc<SessionContext>,
+    expression_registry: ExpressionRegistry,
 }
 
 impl Default for PhysicalPlanner {
@@ -170,6 +174,7 @@ impl PhysicalPlanner {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
             partition,
+            expression_registry: ExpressionRegistry::new(),
         }
     }
 
@@ -178,6 +183,7 @@ impl PhysicalPlanner {
             exec_context_id,
             partition: self.partition,
             session_ctx: Arc::clone(&self.session_ctx),
+            expression_registry: self.expression_registry,
         }
     }
 
@@ -244,84 +250,15 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        match spark_expr.expr_struct.as_ref().unwrap() {
-            ExprStruct::Add(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Plus,
-                    input_schema,
-                    eval_mode,
-                )
-            }
-            ExprStruct::Subtract(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Minus,
-                    input_schema,
-                    eval_mode,
-                )
-            }
-            ExprStruct::Multiply(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Multiply,
-                    input_schema,
-                    eval_mode,
-                )
-            }
-            ExprStruct::Divide(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Divide,
-                    input_schema,
-                    eval_mode,
-                )
-            }
-            ExprStruct::IntegralDivide(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr_with_options(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Divide,
-                    input_schema,
-                    BinaryExprOptions {
-                        is_integral_div: true,
-                    },
-                    eval_mode,
-                )
-            }
-            ExprStruct::Remainder(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                // TODO add support for EvalMode::TRY
-                // https://github.com/apache/datafusion-comet/issues/2021
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        // Try to use the modular registry first - this automatically handles any registered expression types
+        if self.expression_registry.can_handle(spark_expr) {
+            return self
+                .expression_registry
+                .create_expr(spark_expr, input_schema, self);
+        }
 
-                let result = create_modulo_expr(
-                    left,
-                    right,
-                    expr.return_type.as_ref().map(to_arrow_datatype).unwrap(),
-                    input_schema,
-                    eval_mode == EvalMode::Ansi,
-                    &self.session_ctx.state(),
-                );
-                result.map_err(|e| GeneralError(e.to_string()))
-            }
+        // Fall back to the original monolithic match for other expressions
+        match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Eq(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
@@ -730,12 +667,6 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(NotExpr::new(child)))
             }
-            ExprStruct::UnaryMinus(expr) => {
-                let child: Arc<dyn PhysicalExpr> =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let result = create_negate_expr(child, expr.fail_on_error);
-                result.map_err(|e| GeneralError(e.to_string()))
-            }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
@@ -894,7 +825,7 @@ impl PhysicalPlanner {
         }
     }
 
-    fn create_binary_expr(
+    pub fn create_binary_expr(
         &self,
         left: &Expr,
         right: &Expr,
@@ -915,7 +846,7 @@ impl PhysicalPlanner {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn create_binary_expr_with_options(
+    pub fn create_binary_expr_with_options(
         &self,
         left: &Expr,
         right: &Expr,
@@ -2825,7 +2756,7 @@ fn rewrite_physical_expr(
     Ok(expr.rewrite(&mut rewriter).data()?)
 }
 
-fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
+pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
     match spark_expression::EvalMode::try_from(value)? {
         spark_expression::EvalMode::Legacy => Ok(EvalMode::Legacy),
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),

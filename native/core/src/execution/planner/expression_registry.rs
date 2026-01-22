@@ -25,7 +25,92 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::{expr::ExprStruct, Expr};
 
 use crate::execution::operators::ExecutionError;
-use crate::execution::planner::traits::{ExpressionBuilder, ExpressionType};
+
+/// Trait for building physical expressions from Spark protobuf expressions
+pub trait ExpressionBuilder: Send + Sync {
+    /// Build a DataFusion physical expression from a Spark protobuf expression
+    fn build(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        planner: &super::PhysicalPlanner,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError>;
+}
+
+/// Enum to identify different expression types for registry dispatch
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExpressionType {
+    // Arithmetic expressions
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    IntegralDivide,
+    Remainder,
+    UnaryMinus,
+
+    // Comparison expressions
+    Eq,
+    Neq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    EqNullSafe,
+    NeqNullSafe,
+
+    // Logical expressions
+    And,
+    Or,
+    Not,
+
+    // Null checks
+    IsNull,
+    IsNotNull,
+
+    // Bitwise operations
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    BitwiseShiftLeft,
+    BitwiseShiftRight,
+
+    // Other expressions
+    Bound,
+    Unbound,
+    Literal,
+    Cast,
+    CaseWhen,
+    In,
+    If,
+    Substring,
+    Like,
+    Rlike,
+    CheckOverflow,
+    ScalarFunc,
+    NormalizeNanAndZero,
+    Subquery,
+    BloomFilterMightContain,
+    CreateNamedStruct,
+    GetStructField,
+    ToJson,
+    FromJson,
+    ToPrettyString,
+    ListExtract,
+    GetArrayStructFields,
+    ArrayInsert,
+    Rand,
+    Randn,
+    SparkPartitionId,
+    MonotonicallyIncreasingId,
+
+    // Time functions
+    Hour,
+    Minute,
+    Second,
+    TruncTimestamp,
+    UnixTimestamp,
+}
 
 /// Registry for expression builders
 pub struct ExpressionRegistry {
@@ -94,10 +179,11 @@ impl ExpressionRegistry {
         // Register null check expressions
         self.register_null_check_expressions();
 
-        // TODO: Register other expression categories in future phases
-        // self.register_string_expressions();
-        // self.register_temporal_expressions();
-        // etc.
+        // Register string expressions
+        self.register_string_expressions();
+
+        // Register temporal expressions
+        self.register_temporal_expressions();
     }
 
     /// Register arithmetic expression builders
@@ -186,6 +272,40 @@ impl ExpressionRegistry {
             .insert(ExpressionType::IsNotNull, Box::new(IsNotNullBuilder));
     }
 
+    /// Register string expression builders
+    fn register_string_expressions(&mut self) {
+        use crate::execution::expressions::strings::*;
+
+        self.builders
+            .insert(ExpressionType::Substring, Box::new(SubstringBuilder));
+        self.builders
+            .insert(ExpressionType::Like, Box::new(LikeBuilder));
+        self.builders
+            .insert(ExpressionType::Rlike, Box::new(RlikeBuilder));
+        self.builders
+            .insert(ExpressionType::FromJson, Box::new(FromJsonBuilder));
+    }
+
+    /// Register temporal expression builders
+    fn register_temporal_expressions(&mut self) {
+        use crate::execution::expressions::temporal::*;
+
+        self.builders
+            .insert(ExpressionType::Hour, Box::new(HourBuilder));
+        self.builders
+            .insert(ExpressionType::Minute, Box::new(MinuteBuilder));
+        self.builders
+            .insert(ExpressionType::Second, Box::new(SecondBuilder));
+        self.builders.insert(
+            ExpressionType::UnixTimestamp,
+            Box::new(UnixTimestampBuilder),
+        );
+        self.builders.insert(
+            ExpressionType::TruncTimestamp,
+            Box::new(TruncTimestampBuilder),
+        );
+    }
+
     /// Extract expression type from Spark protobuf expression
     fn get_expression_type(spark_expr: &Expr) -> Result<ExpressionType, ExecutionError> {
         match spark_expr.expr_struct.as_ref() {
@@ -239,6 +359,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::CreateNamedStruct(_)) => Ok(ExpressionType::CreateNamedStruct),
             Some(ExprStruct::GetStructField(_)) => Ok(ExpressionType::GetStructField),
             Some(ExprStruct::ToJson(_)) => Ok(ExpressionType::ToJson),
+            Some(ExprStruct::FromJson(_)) => Ok(ExpressionType::FromJson),
             Some(ExprStruct::ToPrettyString(_)) => Ok(ExpressionType::ToPrettyString),
             Some(ExprStruct::ListExtract(_)) => Ok(ExpressionType::ListExtract),
             Some(ExprStruct::GetArrayStructFields(_)) => Ok(ExpressionType::GetArrayStructFields),
@@ -254,6 +375,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::Minute(_)) => Ok(ExpressionType::Minute),
             Some(ExprStruct::Second(_)) => Ok(ExpressionType::Second),
             Some(ExprStruct::TruncTimestamp(_)) => Ok(ExpressionType::TruncTimestamp),
+            Some(ExprStruct::UnixTimestamp(_)) => Ok(ExpressionType::UnixTimestamp),
 
             Some(other) => Err(ExecutionError::GeneralError(format!(
                 "Unsupported expression type: {:?}",

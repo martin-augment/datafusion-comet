@@ -18,7 +18,8 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 pub mod expression_registry;
-pub mod traits;
+pub mod macros;
+pub mod operator_registry;
 
 use crate::execution::operators::IcebergScanExec;
 use crate::{
@@ -27,6 +28,7 @@ use crate::{
         expressions::subquery::Subquery,
         operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
         planner::expression_registry::ExpressionRegistry,
+        planner::operator_registry::OperatorRegistry,
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -50,13 +52,14 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, LikeExpr,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr,
             Literal as DataFusionLiteral,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
+        empty::EmptyExec,
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
@@ -67,7 +70,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SumInteger,
 };
 use iceberg::expr::Bind;
 
@@ -121,9 +124,8 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
-    ToJson, UnboundColumn, Variance,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RandExpr,
+    RandnExpr, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -370,98 +372,6 @@ impl PhysicalPlanner {
                     datatype,
                     SparkCastOptions::new(eval_mode, &expr.timezone, expr.allow_incompat),
                 )))
-            }
-            ExprStruct::Hour(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_hour = Arc::new(ScalarUDF::new_from_impl(SparkHour::new(timezone)));
-                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "hour",
-                    comet_hour,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::Minute(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
-                let field_ref = Arc::new(Field::new("minute", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "minute",
-                    comet_minute,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::Second(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
-                let field_ref = Arc::new(Field::new("second", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "second",
-                    comet_second,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::TruncTimestamp(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let format = self.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(TimestampTruncExpr::new(child, format, timezone)))
-            }
-            ExprStruct::Substring(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                // Spark Substring's start is 1-based when start > 0
-                let start = expr.start - i32::from(expr.start > 0);
-                // substring negative len is treated as 0 in Spark
-                let len = max(expr.len, 0);
-
-                Ok(Arc::new(SubstringExpr::new(
-                    child,
-                    start as i64,
-                    len as u64,
-                )))
-            }
-            ExprStruct::Like(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(LikeExpr::new(false, false, left, right)))
-            }
-            ExprStruct::Rlike(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                match right.as_any().downcast_ref::<Literal>().unwrap().value() {
-                    ScalarValue::Utf8(Some(pattern)) => {
-                        Ok(Arc::new(RLike::try_new(left, pattern)?))
-                    }
-                    _ => Err(GeneralError(
-                        "RLike only supports scalar patterns".to_string(),
-                    )),
-                }
             }
             ExprStruct::CheckOverflow(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -861,29 +771,19 @@ impl PhysicalPlanner {
         inputs: &mut Vec<Arc<GlobalRef>>,
         partition_count: usize,
     ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
+        // Try to use the modular registry first - this automatically handles any registered operator types
+        if OperatorRegistry::global().can_handle(spark_plan) {
+            return OperatorRegistry::global().create_plan(
+                spark_plan,
+                inputs,
+                partition_count,
+                self,
+            );
+        }
+
+        // Fall back to the original monolithic match for other operators
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
-            OpStruct::Projection(project) => {
-                assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
-                let exprs: PhyExprResult = project
-                    .project_list
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, expr)| {
-                        self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{idx}")))
-                    })
-                    .collect();
-                let projection = Arc::new(ProjectionExec::try_new(
-                    exprs?,
-                    Arc::clone(&child.native_plan),
-                )?);
-                Ok((
-                    scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
-                ))
-            }
             OpStruct::Filter(filter) => {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
@@ -1055,6 +955,17 @@ impl PhysicalPlanner {
                     .map(|offset| *offset as usize)
                     .collect();
 
+                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
+                let partition_files = &scan.file_partitions[self.partition as usize];
+
+                if partition_files.partitioned_file.is_empty() {
+                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
+                    return Ok((
+                        vec![],
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
+                    ));
+                }
+
                 // Convert the Spark expressions to Physical expressions
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                     .data_filters
@@ -1098,13 +1009,12 @@ impl PhysicalPlanner {
                     None
                 };
 
-                // Get one file from the list of files
-                let one_file = scan
-                    .file_partitions
+                // Get one file from this partition (we know it's not empty due to early return above)
+                let one_file = partition_files
+                    .partitioned_file
                     .first()
-                    .and_then(|f| f.partitioned_file.first())
                     .map(|f| f.file_path.clone())
-                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
+                    .expect("partition should have files after empty check");
 
                 let object_store_options: HashMap<String, String> = scan
                     .object_store_options
@@ -1199,6 +1109,7 @@ impl PhysicalPlanner {
                 );
 
                 let tasks = parse_file_scan_tasks(
+                    scan,
                     &scan.file_partitions[self.partition as usize].file_scan_tasks,
                 )?;
                 let file_task_groups = vec![tasks];
@@ -1241,6 +1152,7 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                let write_buffer_size = writer.write_buffer_size as usize;
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
@@ -1248,6 +1160,7 @@ impl PhysicalPlanner {
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
+                    write_buffer_size,
                 )?);
 
                 Ok((
@@ -1274,6 +1187,12 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                let object_store_options: HashMap<String, String> = writer
+                    .object_store_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+
                 let parquet_writer = Arc::new(ParquetWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
@@ -1287,6 +1206,7 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    object_store_options,
                 )?);
 
                 Ok((
@@ -1450,7 +1370,7 @@ impl PhysicalPlanner {
                     vec![], // No struct columns to unnest
                     output_schema,
                     unnest_options,
-                ));
+                )?);
 
                 Ok((
                     scans,
@@ -1634,6 +1554,10 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
                 ))
             }
+            _ => Err(GeneralError(format!(
+                "Unsupported or unregistered operator type: {:?}",
+                spark_plan.op_struct
+            ))),
         }
     }
 
@@ -1836,6 +1760,12 @@ impl PhysicalPlanner {
                             AggregateUDF::new_from_impl(SumDecimal::try_new(datatype, eval_mode)?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
+                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let func =
+                            AggregateUDF::new_from_impl(SumInteger::try_new(datatype, eval_mode)?);
+                        AggregateExprBuilder::new(Arc::new(func), vec![child])
+                    }
                     _ => {
                         // cast to the result data type of SUM if necessary, we should not expect
                         // a cast failure since it should have already been checked at Spark side
@@ -1856,6 +1786,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
+
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
                         let func =
@@ -1863,12 +1794,11 @@ impl PhysicalPlanner {
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {
-                        // cast to the result data type of AVG if the result data type is different
-                        // from the input type, e.g. AVG(Int32). We should not expect a cast
-                        // failure since it should have already been checked at Spark side.
+                        // For all other numeric types (Int8/16/32/64, Float32/64):
+                        // Cast to Float64 for accumulation
                         let child: Arc<dyn PhysicalExpr> =
-                            Arc::new(CastExpr::new(Arc::clone(&child), datatype.clone(), None));
-                        let func = AggregateUDF::new_from_impl(Avg::new("avg", datatype));
+                            Arc::new(CastExpr::new(Arc::clone(&child), DataType::Float64, None));
+                        let func = AggregateUDF::new_from_impl(Avg::new("avg", DataType::Float64));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                 };
@@ -2234,7 +2164,7 @@ impl PhysicalPlanner {
             partition_by,
             sort_phy_exprs,
             window_frame.into(),
-            input_schema.as_ref(),
+            input_schema,
             false, // TODO: Ignore nulls
             false, // TODO: Spark does not support DISTINCT ... OVER
             None,
@@ -2663,29 +2593,66 @@ fn convert_spark_types_to_arrow_schema(
 ///
 /// Each task contains a residual predicate that is used for row-group level filtering
 /// during Parquet scanning.
+///
+/// This function uses deduplication pools from the IcebergScan to avoid redundant parsing
+/// of schemas, partition specs, partition types, name mappings, and other repeated data.
 fn parse_file_scan_tasks(
+    proto_scan: &spark_operator::IcebergScan,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
 ) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
-    let results: Result<Vec<_>, _> = proto_tasks
+    // Build caches upfront: for 10K tasks with 1 schema, this parses the schema
+    // once instead of 10K times, eliminating redundant JSON deserialization
+    let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_scan
+        .schema_pool
         .iter()
-        .map(|proto_task| {
-            let schema: iceberg::spec::Schema = serde_json::from_str(&proto_task.schema_json)
-                .map_err(|e| {
-                    ExecutionError::GeneralError(format!("Failed to parse schema JSON: {}", e))
-                })?;
+        .map(|json| {
+            serde_json::from_str(json).map(Arc::new).map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to parse schema JSON from pool: {}",
+                    e
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-            let schema_ref = Arc::new(schema);
+    let partition_type_cache: Vec<iceberg::spec::StructType> = proto_scan
+        .partition_type_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str(json).map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to parse partition type JSON from pool: {}",
+                    e
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-            // CometScanRule validates format before serialization
-            debug_assert_eq!(
-                proto_task.data_file_format.as_str(),
-                "PARQUET",
-                "Only PARQUET format is supported. This indicates a bug in CometScanRule validation."
-            );
-            let data_file_format = iceberg::spec::DataFileFormat::Parquet;
+    let partition_spec_cache: Vec<Option<Arc<iceberg::spec::PartitionSpec>>> = proto_scan
+        .partition_spec_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str::<iceberg::spec::PartitionSpec>(json)
+                .ok()
+                .map(Arc::new)
+        })
+        .collect();
 
-            let deletes: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_task
-                .delete_files
+    let name_mapping_cache: Vec<Option<Arc<iceberg::spec::NameMapping>>> = proto_scan
+        .name_mapping_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str::<iceberg::spec::NameMapping>(json)
+                .ok()
+                .map(Arc::new)
+        })
+        .collect();
+
+    let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_scan
+        .delete_files_pool
+        .iter()
+        .map(|list| {
+            list.delete_files
                 .iter()
                 .map(|del| {
                     let file_type = match del.content_type.as_str() {
@@ -2710,53 +2677,106 @@ fn parse_file_scan_tasks(
                         },
                     })
                 })
-                .collect::<Result<Vec<_>, ExecutionError>>()?;
+                .collect::<Result<Vec<_>, ExecutionError>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-            // Residuals are serialized with binding=false (name-based references).
-            // Convert to Iceberg predicate and bind to this file's schema for row-group filtering.
-            let bound_predicate = proto_task
-                .residual
-                .as_ref()
-                .and_then(|residual_expr| {
-                    convert_spark_expr_to_predicate(residual_expr)
-                })
-                .map(
-                    |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
-                        let bound = pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
-                            ExecutionError::GeneralError(format!(
-                                "Failed to bind predicate to schema: {}",
-                                e
-                            ))
-                        })?;
+    let partition_data_cache: Vec<serde_json::Value> = proto_scan
+        .partition_data_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str(json).map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to parse partition data JSON from pool: {}",
+                    e
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-                        Ok(bound)
-                    },
-                )
-                .transpose()?;
-
-            let partition = if let (Some(partition_json), Some(partition_type_json)) = (
-                proto_task.partition_data_json.as_ref(),
-                proto_task.partition_type_json.as_ref(),
-            ) {
-                let partition_type: iceberg::spec::StructType =
-                    serde_json::from_str(partition_type_json).map_err(|e| {
+    let results: Result<Vec<_>, _> = proto_tasks
+        .iter()
+        .map(|proto_task| {
+            let schema_ref = Arc::clone(
+                schema_cache
+                    .get(proto_task.schema_idx as usize)
+                    .ok_or_else(|| {
                         ExecutionError::GeneralError(format!(
-                            "Failed to parse partition type JSON: {}",
-                            e
+                            "Invalid schema_idx: {} (pool size: {})",
+                            proto_task.schema_idx,
+                            schema_cache.len()
+                        ))
+                    })?,
+            );
+
+            let data_file_format = iceberg::spec::DataFileFormat::Parquet;
+
+            let deletes = if let Some(idx) = proto_task.delete_files_idx {
+                delete_files_cache
+                    .get(idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid delete_files_idx: {} (pool size: {})",
+                            idx,
+                            delete_files_cache.len()
+                        ))
+                    })?
+                    .clone()
+            } else {
+                vec![]
+            };
+
+            let bound_predicate = if let Some(idx) = proto_task.residual_idx {
+                proto_scan
+                    .residual_pool
+                    .get(idx as usize)
+                    .and_then(convert_spark_expr_to_predicate)
+                    .map(
+                        |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
+                            pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
+                                ExecutionError::GeneralError(format!(
+                                    "Failed to bind predicate to schema: {}",
+                                    e
+                                ))
+                            })
+                        },
+                    )
+                    .transpose()?
+            } else {
+                None
+            };
+
+            let partition = if let Some(partition_data_idx) = proto_task.partition_data_idx {
+                let partition_type_idx = proto_task.partition_type_idx.ok_or_else(|| {
+                    ExecutionError::GeneralError(
+                        "partition_type_idx is required when partition_data_idx is present"
+                            .to_string(),
+                    )
+                })?;
+
+                let partition_data_value = partition_data_cache
+                    .get(partition_data_idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid partition_data_idx: {} (cache size: {})",
+                            partition_data_idx,
+                            partition_data_cache.len()
                         ))
                     })?;
 
-                let partition_data_value: serde_json::Value = serde_json::from_str(partition_json)
-                    .map_err(|e| {
+                let partition_type = partition_type_cache
+                    .get(partition_type_idx as usize)
+                    .ok_or_else(|| {
                         ExecutionError::GeneralError(format!(
-                            "Failed to parse partition data JSON: {}",
-                            e
+                            "Invalid partition_type_idx: {} (cache size: {})",
+                            partition_type_idx,
+                            partition_type_cache.len()
                         ))
                     })?;
 
                 match iceberg::spec::Literal::try_from_json(
-                    partition_data_value,
-                    &iceberg::spec::Type::Struct(partition_type),
+                    partition_data_value.clone(),
+                    &iceberg::spec::Type::Struct(partition_type.clone()),
                 ) {
                     Ok(Some(iceberg::spec::Literal::Struct(s))) => Some(s),
                     Ok(None) => None,
@@ -2777,28 +2797,28 @@ fn parse_file_scan_tasks(
                 None
             };
 
-            let partition_spec = if let Some(partition_spec_json) =
-                proto_task.partition_spec_json.as_ref()
-            {
-                // Try to parse partition spec, but gracefully handle unknown transforms
-                // for forward compatibility (e.g., TestForwardCompatibility tests)
-                match serde_json::from_str::<iceberg::spec::PartitionSpec>(partition_spec_json) {
-                    Ok(spec) => Some(Arc::new(spec)),
-                    Err(_) => None,
-                }
-            } else {
-                None
-            };
+            let partition_spec = proto_task
+                .partition_spec_idx
+                .and_then(|idx| partition_spec_cache.get(idx as usize))
+                .and_then(|opt| opt.clone());
 
-            let name_mapping = if let Some(name_mapping_json) = proto_task.name_mapping_json.as_ref()
-            {
-                match serde_json::from_str::<iceberg::spec::NameMapping>(name_mapping_json) {
-                    Ok(mapping) => Some(Arc::new(mapping)),
-                    Err(_) => None, // Name mapping is optional
-                }
-            } else {
-                None
-            };
+            let name_mapping = proto_task
+                .name_mapping_idx
+                .and_then(|idx| name_mapping_cache.get(idx as usize))
+                .and_then(|opt| opt.clone());
+
+            let project_field_ids = proto_scan
+                .project_field_ids_pool
+                .get(proto_task.project_field_ids_idx as usize)
+                .ok_or_else(|| {
+                    ExecutionError::GeneralError(format!(
+                        "Invalid project_field_ids_idx: {} (pool size: {})",
+                        proto_task.project_field_ids_idx,
+                        proto_scan.project_field_ids_pool.len()
+                    ))
+                })?
+                .field_ids
+                .clone();
 
             Ok(iceberg::scan::FileScanTask {
                 data_file_path: proto_task.data_file_path.clone(),
@@ -2807,12 +2827,13 @@ fn parse_file_scan_tasks(
                 record_count: proto_task.record_count,
                 data_file_format,
                 schema: schema_ref,
-                project_field_ids: proto_task.project_field_ids.clone(),
+                project_field_ids,
                 predicate: bound_predicate,
                 deletes,
                 partition,
                 partition_spec,
                 name_mapping,
+                case_sensitive: false,
             })
         })
         .collect();

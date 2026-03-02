@@ -419,6 +419,26 @@ abstract class CometTestBase
     }
   }
 
+  // checks the plan node has no missing inputs
+  // such nodes represented in plan with exclamation mark !
+  // example: !CometWindowExec
+  protected def checkPlanNotMissingInput(plan: SparkPlan): Unit = {
+    def hasMissingInput(node: SparkPlan): Boolean = {
+      node.missingInput.nonEmpty && node.children.nonEmpty
+    }
+
+    val isCometNode = plan.nodeName.startsWith("Comet")
+
+    if (isCometNode && hasMissingInput(plan)) {
+      assert(false, s"Plan node `${plan.nodeName}` has invalid missingInput")
+    }
+
+    // Otherwise recursively check children
+    plan.children.foreach { child =>
+      checkPlanNotMissingInput(child)
+    }
+  }
+
   private def checkPlanContains(plan: SparkPlan, includePlans: Class[_]*): Unit = {
     includePlans.foreach { case planClass =>
       if (plan.find(op => planClass.isAssignableFrom(op.getClass)).isEmpty) {

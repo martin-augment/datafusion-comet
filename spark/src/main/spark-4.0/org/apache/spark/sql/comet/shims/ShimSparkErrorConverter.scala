@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.QueryContext
 import org.apache.spark.SparkException
+import org.apache.spark.SparkFileNotFoundException
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -250,6 +251,20 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors.withoutSuggestionIntervalArithmeticOverflowError(
             context.headOption.orNull))
+
+      case "FileNotFound" =>
+        val msg = params("message").toString
+        // Extract file path from native error message and format like Hadoop's
+        // FileNotFoundException: "File <path> does not exist"
+        val path = "Object at location (.+?) not found".r
+          .findFirstMatchIn(msg)
+          .map(_.group(1))
+          .getOrElse(msg)
+        // readCurrentFileNotFoundError was removed in Spark 4.0; construct directly
+        Some(
+          new SparkFileNotFoundException(
+            errorClass = "_LEGACY_ERROR_TEMP_2055",
+            messageParameters = Map("message" -> s"File $path does not exist")))
 
       case _ =>
         // Unknown error type - return None to trigger fallback

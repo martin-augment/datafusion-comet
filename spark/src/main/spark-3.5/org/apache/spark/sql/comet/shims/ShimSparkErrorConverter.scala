@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.shims
 
+import java.io.FileNotFoundException
+
 import org.apache.spark.{QueryContext, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
@@ -238,6 +240,18 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors
             .intervalArithmeticOverflowError("Interval arithmetic overflow", "", sqlCtx(context)))
+
+      case "FileNotFound" =>
+        val msg = params("message").toString
+        // Extract file path from native error message and format like Hadoop's
+        // FileNotFoundException: "File <path> does not exist"
+        val path = "Object at location (.+?) not found".r
+          .findFirstMatchIn(msg)
+          .map(_.group(1))
+          .getOrElse(msg)
+        Some(
+          QueryExecutionErrors.readCurrentFileNotFoundError(
+            new FileNotFoundException(s"File $path does not exist")))
 
       case _ =>
         None

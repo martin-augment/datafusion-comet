@@ -19,7 +19,9 @@
 
 package org.apache.spark
 
-import org.apache.spark.sql.CometTestBase
+import java.io.File
+
+import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.internal.StaticSQLConf
 
 class CometPluginsSuite extends CometTestBase {
@@ -75,6 +77,24 @@ class CometPluginsSuite extends CometTestBase {
         "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
           StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
     }
+  }
+
+  test("CometSource metrics are recorded") {
+    val nativeBefore = CometSource.NATIVE_OPERATORS.getCount
+    val queriesBefore = CometSource.QUERIES_PLANNED.getCount
+
+    withTempPath { dir =>
+      val path = new File(dir, "test.parquet").toString
+      spark.range(1000).toDF("id").write.mode(SaveMode.Overwrite).parquet(path)
+      spark.read.parquet(path).filter("id > 500").collect()
+    }
+
+    assert(
+      CometSource.QUERIES_PLANNED.getCount > queriesBefore,
+      "queries.planned should increment after query")
+    assert(
+      CometSource.NATIVE_OPERATORS.getCount > nativeBefore,
+      "operators.native should increment for native execution")
   }
 
   test("Default Comet memory overhead") {

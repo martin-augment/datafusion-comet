@@ -21,6 +21,7 @@ package org.apache.comet.rules
 
 import scala.collection.mutable.ListBuffer
 
+import org.apache.spark.CometSource
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
@@ -47,7 +48,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -388,6 +389,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       }
 
       var newPlan = transform(planWithJoinRewritten)
+
+      // Record coverage stats for metrics
+      val stats = CometCoverageStats.forPlan(newPlan)
+      CometSource.recordStats(stats)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)

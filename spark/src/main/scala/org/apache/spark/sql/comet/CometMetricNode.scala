@@ -79,6 +79,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
     }
   }
 
+  // Called via JNI from `comet_metric_node.rs`
   def set_all_from_bytes(bytes: Array[Byte]): Unit = {
     val metricNode = Metric.NativeMetricNode.parseFrom(bytes)
     set_all(metricNode)

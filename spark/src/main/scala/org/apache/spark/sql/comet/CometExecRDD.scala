@@ -139,6 +139,13 @@ private[spark] class CometExecRDD(
       ctx.addTaskCompletionListener[Unit] { _ =>
         it.close()
         subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
+
+        nativeMetrics.metrics
+          .get("bytes_scanned")
+          .foreach(m => ctx.taskMetrics().inputMetrics.setBytesRead(m.value))
+        nativeMetrics.metrics
+          .get("output_rows")
+          .foreach(m => ctx.taskMetrics().inputMetrics.setRecordsRead(m.value))
       }
     }
 

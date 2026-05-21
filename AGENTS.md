@@ -33,3 +33,8 @@ Relevant entry points:
 
 When opening a pull request, use the [PR template](.github/pull_request_template.md) and fill
 in every section.
+The AI agents should never link to any issue or a pull request
+in any GitHub repository in the code reviews!
+
+The AI agents should not review AI agents' config files like CLAUDE.md or AGENTS.md!
+

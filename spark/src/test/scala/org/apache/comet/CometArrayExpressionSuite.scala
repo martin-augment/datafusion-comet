@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -137,7 +137,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
           .createOrReplaceTempView("t2")
         val expectedFallbackReason =
-          "is not fully compatible with Spark"
+          "data type not supported"
         checkSparkAnswerAndFallbackReason(
           sql("SELECT array_remove(a, b) FROM t2"),
           expectedFallbackReason)
@@ -243,7 +243,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val df = spark.read
           .parquet(path.toString)
           .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-          .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
+          .withColumn("idx", org.apache.spark.sql.functions.udf((_: Int) => 1).apply(col("_4")))
           .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
         checkSparkAnswerAndFallbackReasons(
           df.select("arrUnsupportedArgs"),
@@ -403,50 +403,42 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_distinct") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayDistinct]) -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, n = 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-            // The result needs to be in ascending order for checkSparkAnswerAndOperator to pass
-            // because datafusion array_distinct sorts the elements and then removes the duplicates
-            checkSparkAnswerAndOperator(
-              spark.sql("SELECT array_distinct(array(_2, _2, _3, _4, _4)) FROM t1"))
-            checkSparkAnswerAndOperator(
-              spark.sql("SELECT array_distinct((CASE WHEN _2 =_3 THEN array(_4) END)) FROM t1"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT array_distinct((CASE WHEN _2 =_3 THEN array(_2, _2, _4, _4, _5) END)) FROM t1"))
-            // NULL needs to be the first element for checkSparkAnswerAndOperator to pass because
-            // datafusion array_distinct sorts the elements and then removes the duplicates
-            checkSparkAnswerAndOperator(
-              spark.sql(
-                "SELECT array_distinct(array(CAST(NULL AS INT), _2, _2, _3, _4, _4)) FROM t1"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT array_distinct(array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _2, _3, _4, _4)) FROM t1"))
-          }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, n = 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_distinct(array(_3, _2, _4, _2, _4)) FROM t1"))
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_distinct((CASE WHEN _2 =_3 THEN array(_4) END)) FROM t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_distinct((CASE WHEN _2 =_3 THEN array(_2, _2, _4, _4, _5) END)) FROM t1"))
+          checkSparkAnswerAndOperator(
+            spark.sql(
+              "SELECT array_distinct(array(_2, _2, CAST(NULL AS INT), _3, _4, _4)) FROM t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_distinct(array(_2, _2, CAST(NULL AS INT), CAST(NULL AS INT), _3, _4, _4)) FROM t1"))
         }
       }
     }
   }
 
   test("array_union") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayUnion]) -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, n = 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-            checkSparkAnswerAndOperator(
-              spark.sql("SELECT array_union(array(_2, _3, _4), array(_3, _4)) FROM t1"))
-            checkSparkAnswerAndOperator(sql("SELECT array_union(array(_18), array(_19)) from t1"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT array_union(array(CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), _2, _3)) FROM t1"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT array_union(array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3)) FROM t1"))
-          }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, n = 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_union(array(_2, _3, _4), array(_3, _4)) FROM t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_union(array(_18), array(_19)) from t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_union(array(CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), _2, _3)) FROM t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_union(array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3)) FROM t1"))
         }
       }
     }
@@ -545,30 +537,106 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("arrays_overlap") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArraysOverlap]) -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array(_2, _3, _4), array(_3, _4)) from t1 where _2 is not null"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array('a', null, cast(_1 as string)), array('b', cast(_1 as string), cast(_2 as string))) from t1 where _1 is not null"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
-          }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(_2, _3, _4), array(_3, _4)) from t1 where _2 is not null"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array('a', null, cast(_1 as string)), array('b', cast(_1 as string), cast(_2 as string))) from t1 where _1 is not null"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
+        }
+      }
+    }
+  }
+
+  test("arrays_overlap - null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql("create table t using parquet as select CAST(NULL as array<int>) a1 from range(1)")
+        val data = Seq(
+          "array(1, 2, 3)",
+          "array(3, 4, 5)",
+          "array(1, 2)",
+          "array(3, 4)",
+          "array(1, NULL, 3)",
+          "array(4, 5)",
+          "array(1, 4)",
+          "array(1, NULL)",
+          "array(2, NULL)",
+          "array(NULL, 2)",
+          "array(1)",
+          "array(2)",
+          "array()",
+          "array(NULL)",
+          "array(NULL, NULL)",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+        }
+      }
+    }
+  }
+
+  test("arrays_overlap - nested array null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql(
+          "create table t using parquet as select CAST(NULL as array<array<int>>) a1 from range(1)")
+        val data = Seq(
+          "array(array(1, 2), array(3, 4))",
+          "array(array(1, 2), array(5, 6))",
+          "array(array(1, 2))",
+          "array(array(3, 4))",
+          "array(array(1, NULL))",
+          "array(array(NULL, 2))",
+          "array(array(NULL))",
+          "array(CAST(NULL as array<int>))",
+          "array(array(1, 2), CAST(NULL as array<int>))",
+          "array()",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+        }
+      }
+    }
+  }
+
+  test("arrays_overlap - struct element null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql(
+          "create table t using parquet as select CAST(NULL as array<struct<a:int,b:int>>) a1 from range(1)")
+        // Cast all structs to the same nullable type to avoid Arrow schema mismatch
+        val s = "struct<a:int,b:int>"
+        val data = Seq(
+          s"array(CAST(named_struct('a', 1, 'b', 2) AS $s), CAST(named_struct('a', 3, 'b', 4) AS $s))",
+          s"array(CAST(named_struct('a', 1, 'b', 2) AS $s))",
+          s"array(CAST(named_struct('a', 3, 'b', 4) AS $s))",
+          s"array(CAST(named_struct('a', 1, 'b', CAST(NULL as int)) AS $s))",
+          s"array(CAST(named_struct('a', CAST(NULL as int), 'b', 2) AS $s))",
+          s"array(CAST(named_struct('a', CAST(NULL as int), 'b', CAST(NULL as int)) AS $s))",
+          s"array(CAST(NULL as $s))",
+          s"array(CAST(named_struct('a', 1, 'b', 2) AS $s), CAST(NULL as $s))",
+          "array()",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
         }
       }
     }
   }
 
   test("array_compact") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         withTempView("t1") {
@@ -693,6 +761,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
             checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, null) from t1"))
             checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, 0) from t1"))
+            checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, -1) from t1"))
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_repeat(cast(_3 as string), -5) from t1"))
             checkSparkAnswerAndOperator(
               sql("SELECT array_repeat(_2, 5) from t1 where _2 is not null"))
             checkSparkAnswerAndOperator(
@@ -871,61 +942,64 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("size with array input") {
-    withTempDir { dir =>
-      withTempView("t1") {
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
-        // Test size function with arrays built from columns (ensures native execution)
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(array(_2, _3, _4)) from t1 where _2 is not null order by _2, _3, _4"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(array(_1)) from t1 where _1 is not null order by _1"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(array(_2, _3)) from t1 where _2 is null order by _2, _3"))
+          // Test size function with arrays built from columns (ensures native execution)
+          checkSparkAnswerAndOperator(
+            sql(
+              "SELECT size(array(_2, _3, _4)) from t1 where _2 is not null order by _2, _3, _4"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT size(array(_1)) from t1 where _1 is not null order by _1"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT size(array(_2, _3)) from t1 where _2 is null order by _2, _3"))
 
-        // Test with conditional arrays (forces runtime evaluation)
-        checkSparkAnswerAndOperator(sql(
-          "SELECT size(case when _2 > 0 then array(_2, _3, _4) else array(_2) end) from t1 order by _2, _3, _4"))
-        checkSparkAnswerAndOperator(sql(
-          "SELECT size(case when _1 then array(_8, _9) else array(_8, _9, _10) end) from t1 order by _1, _8, _9, _10"))
+          // Test with conditional arrays (forces runtime evaluation)
+          checkSparkAnswerAndOperator(sql(
+            "SELECT size(case when _2 > 0 then array(_2, _3, _4) else array(_2) end) from t1 order by _2, _3, _4"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT size(case when _1 then array(_8, _9) else array(_8, _9, _10) end) from t1 order by _1, _8, _9, _10"))
 
-        // Test empty arrays using conditional logic to avoid constant folding
-        checkSparkAnswerAndOperator(sql(
-          "SELECT size(case when _2 < 0 then array(_2, _3) else array() end) from t1 order by _2, _3"))
+          // Test empty arrays using conditional logic to avoid constant folding
+          checkSparkAnswerAndOperator(sql(
+            "SELECT size(case when _2 < 0 then array(_2, _3) else array() end) from t1 order by _2, _3"))
 
-        // Test null arrays using conditional logic
-        checkSparkAnswerAndOperator(sql(
-          "SELECT size(case when _2 is null then cast(null as array<int>) else array(_2) end) from t1 order by _2"))
+          // Test null arrays using conditional logic
+          checkSparkAnswerAndOperator(sql(
+            "SELECT size(case when _2 is null then cast(null as array<int>) else array(_2) end) from t1 order by _2"))
 
-        // Test with different data types using column references
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(array(_8, _9, _10)) from t1 where _8 is not null order by _8, _9, _10")
-        ) // string arrays
-        checkSparkAnswerAndOperator(
-          sql(
-            "SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null order by _2, _3, _4, _5, _6"
-          )
-        ) // int arrays
+          // Test with different data types using column references
+          checkSparkAnswerAndOperator(
+            sql(
+              "SELECT size(array(_8, _9, _10)) from t1 where _8 is not null order by _8, _9, _10"
+            )
+          ) // string arrays
+          checkSparkAnswerAndOperator(
+            sql(
+              "SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null order by _2, _3, _4, _5, _6"
+            )
+          ) // int arrays
+        }
       }
     }
   }
 
   test("size - respect to legacySizeOfNull") {
     val table = "t1"
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-      withTable(table) {
-        sql(s"create table $table(col array<string>) using parquet")
-        sql(s"insert into $table values(null)")
-        withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
-          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
-        }
-        withSQLConf(
-          SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
-          SQLConf.ANSI_ENABLED.key -> "false") {
-          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
-        }
+    withTable(table) {
+      sql(s"create table $table(col array<string>) using parquet")
+      sql(s"insert into $table values(null)")
+      withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+        checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+      }
+      withSQLConf(
+        SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
+        SQLConf.ANSI_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
       }
     }
   }

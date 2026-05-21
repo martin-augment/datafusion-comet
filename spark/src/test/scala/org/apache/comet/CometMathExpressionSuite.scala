@@ -32,11 +32,13 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("abs") {
-    val df = createTestData(generateNegativeZero = false)
-    df.createOrReplaceTempView("tbl")
-    for (field <- df.schema.fields) {
-      val col = field.name
-      checkSparkAnswerAndOperator(s"SELECT $col, abs($col) FROM tbl ORDER BY $col")
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      val df = createTestData(generateNegativeZero = false)
+      df.createOrReplaceTempView("tbl")
+      for (field <- df.schema.fields) {
+        val col = field.name
+        checkSparkAnswerAndOperator(s"SELECT $col, abs($col) FROM tbl ORDER BY $col")
+      }
     }
   }
 
@@ -92,8 +94,7 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       DataGenOptions(generateNegativeZero = generateNegativeZero))
   }
 
-  // https://github.com/apache/datafusion-comet/issues/3561
-  ignore("width_bucket") {
+  test("width_bucket") {
     assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
     withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
@@ -106,8 +107,7 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/3561
-  ignore("width_bucket - edge cases") {
+  test("width_bucket - edge cases") {
     assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
     withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
@@ -124,8 +124,7 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/3561
-  ignore("width_bucket - NaN values") {
+  test("width_bucket - NaN values") {
     assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
     withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
@@ -137,8 +136,7 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/3561
-  ignore("width_bucket - with range data") {
+  test("width_bucket - with range data") {
     assume(isSpark35Plus, "width_bucket was added in Spark 3.5")
     withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
